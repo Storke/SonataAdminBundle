@@ -23,6 +23,9 @@ use Symfony\Component\Form\Guess\Guess;
  */
 class TypeGuesserChain implements TypeGuesserInterface
 {
+    /**
+     * @var array
+     */
     protected $guessers = array();
 
     /**
@@ -44,7 +47,7 @@ class TypeGuesserChain implements TypeGuesserInterface
     }
 
     /**
-     * {@inheritDoc}
+     * {@inheritdoc}
      */
     public function guessType($class, $property, ModelManagerInterface $modelManager)
     {

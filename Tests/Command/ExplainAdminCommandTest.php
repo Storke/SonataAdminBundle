@@ -121,10 +121,18 @@ class ExplainAdminCommandTest extends \PHPUnit_Framework_TestCase
                 return $adminParent;
             }));
 
-        $this->validatorFactory = $this->getMock('Symfony\Component\Validator\MetadataFactoryInterface');
+        // Prefer Symfony 2.x interfaces
+        if (interface_exists('Symfony\Component\Validator\MetadataFactoryInterface')) {
+            $this->validatorFactory = $this->getMock('Symfony\Component\Validator\MetadataFactoryInterface');
 
-        $validator = $this->getMock('Symfony\Component\Validator\ValidatorInterface');
-        $validator->expects($this->any())->method('getMetadataFactory')->will($this->returnValue($this->validatorFactory));
+            $validator = $this->getMock('Symfony\Component\Validator\ValidatorInterface');
+            $validator->expects($this->any())->method('getMetadataFactory')->will($this->returnValue($this->validatorFactory));
+        } else {
+            $this->validatorFactory = $this->getMock('Symfony\Component\Validator\Mapping\Factory\MetadataFactoryInterface');
+
+            $validator = $this->getMock('Symfony\Component\Validator\Validator\ValidatorInterface');
+            $validator->expects($this->any())->method('getMetadataFor')->will($this->returnValue($this->validatorFactory));
+        }
 
         // php 5.3 BC
         $admin = $this->admin;
@@ -208,7 +216,7 @@ class ExplainAdminCommandTest extends \PHPUnit_Framework_TestCase
         $commandTester = new CommandTester($command);
         $commandTester->execute(array('command' => $command->getName(), 'admin' => 'acme.admin.foo'));
 
-        $this->assertEquals(sprintf(str_replace("\n", PHP_EOL, file_get_contents(__DIR__.'/../Fixtures/Command/explain_admin.txt')), get_class($this->admin), get_class($modelManager), get_class($datagridBuilder), get_class($listBuilder)), $commandTester->getDisplay());
+        $this->assertSame(sprintf(str_replace("\n", PHP_EOL, file_get_contents(__DIR__.'/../Fixtures/Command/explain_admin.txt')), get_class($this->admin), get_class($modelManager), get_class($datagridBuilder), get_class($listBuilder)), $commandTester->getDisplay());
     }
 
     public function testExecuteEmptyValidator()
@@ -253,7 +261,7 @@ class ExplainAdminCommandTest extends \PHPUnit_Framework_TestCase
         $commandTester = new CommandTester($command);
         $commandTester->execute(array('command' => $command->getName(), 'admin' => 'acme.admin.foo'));
 
-        $this->assertEquals(sprintf(str_replace("\n", PHP_EOL, file_get_contents(__DIR__.'/../Fixtures/Command/explain_admin_empty_validator.txt')), get_class($this->admin), get_class($modelManager), get_class($datagridBuilder), get_class($listBuilder)), $commandTester->getDisplay());
+        $this->assertSame(sprintf(str_replace("\n", PHP_EOL, file_get_contents(__DIR__.'/../Fixtures/Command/explain_admin_empty_validator.txt')), get_class($this->admin), get_class($modelManager), get_class($datagridBuilder), get_class($listBuilder)), $commandTester->getDisplay());
     }
 
     public function testExecuteNonAdminService()
@@ -263,7 +271,7 @@ class ExplainAdminCommandTest extends \PHPUnit_Framework_TestCase
             $commandTester = new CommandTester($command);
             $commandTester->execute(array('command' => $command->getName(), 'admin' => 'nonexistent.service'));
         } catch (\RuntimeException $e) {
-            $this->assertEquals('Service "nonexistent.service" is not an admin class', $e->getMessage());
+            $this->assertSame('Service "nonexistent.service" is not an admin class', $e->getMessage());
 
             return;
         }

@@ -11,15 +11,18 @@
 
 namespace Sonata\AdminBundle\Controller;
 
+use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Sonata\AdminBundle\Admin\AdminInterface;
 use Sonata\AdminBundle\Admin\BaseFieldDescription;
 use Sonata\AdminBundle\Datagrid\ProxyQueryInterface;
+use Sonata\AdminBundle\Exception\LockException;
 use Sonata\AdminBundle\Exception\ModelManagerException;
 use Sonata\AdminBundle\Util\AdminObjectAclData;
 use Sonata\AdminBundle\Util\AdminObjectAclManipulator;
 use Symfony\Bundle\FrameworkBundle\Controller\Controller;
 use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\Form\Form;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -148,7 +151,7 @@ class CRUDController extends Controller
      * Proxy for the logger service of the container.
      * If no such service is found, a NullLogger is returned.
      *
-     * @return \Psr\Log\LoggerInterface
+     * @return LoggerInterface
      */
     protected function getLogger()
     {
@@ -230,9 +233,7 @@ class CRUDController extends Controller
     {
         $request = $this->resolveRequest($request);
 
-        if (false === $this->admin->isGranted('LIST')) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('list');
 
         $preResponse = $this->preList($request);
         if ($preResponse !== null) {
@@ -261,16 +262,17 @@ class CRUDController extends Controller
      * Execute a batch delete.
      *
      * @param ProxyQueryInterface $query
+     * @param Request             $request
      *
      * @return RedirectResponse
      *
      * @throws AccessDeniedException If access is not granted
      */
-    public function batchActionDelete(ProxyQueryInterface $query)
+    public function batchActionDelete(ProxyQueryInterface $query, Request $request = null)
     {
-        if (false === $this->admin->isGranted('DELETE')) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('batchDelete');
+
+        $request = $this->resolveRequest($request);
 
         $modelManager = $this->admin->getModelManager();
         try {
@@ -305,12 +307,10 @@ class CRUDController extends Controller
         $object  = $this->admin->getObject($id);
 
         if (!$object) {
-            throw new NotFoundHttpException(sprintf('unable to find the object with id : %s', $id));
+            throw $this->createNotFoundException(sprintf('unable to find the object with id : %s', $id));
         }
 
-        if (false === $this->admin->isGranted('DELETE', $object)) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('delete', $object);
 
         $preResponse = $this->preDelete($request, $object);
         if ($preResponse !== null) {
@@ -386,12 +386,10 @@ class CRUDController extends Controller
         $object = $this->admin->getObject($id);
 
         if (!$object) {
-            throw new NotFoundHttpException(sprintf('unable to find the object with id : %s', $id));
+            throw $this->createNotFoundException(sprintf('unable to find the object with id : %s', $id));
         }
 
-        if (false === $this->admin->isGranted('EDIT', $object)) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('edit', $object);
 
         $preResponse = $this->preEdit($request, $object);
         if ($preResponse !== null) {
@@ -400,7 +398,7 @@ class CRUDController extends Controller
 
         $this->admin->setSubject($object);
 
-        /** @var $form \Symfony\Component\Form\Form */
+        /** @var $form Form */
         $form = $this->admin->getForm();
         $form->setData($object);
         $form->handleRequest($request);
@@ -415,8 +413,9 @@ class CRUDController extends Controller
 
                     if ($this->isXmlHttpRequest($request)) {
                         return $this->renderJson(array(
-                            'result'    => 'ok',
-                            'objectId'  => $this->admin->getNormalizedIdentifier($object),
+                            'result'     => 'ok',
+                            'objectId'   => $this->admin->getNormalizedIdentifier($object),
+                            'objectName' => $this->escapeHtml($this->admin->toString($object)),
                         ), 200, array(), $request);
                     }
 
@@ -435,6 +434,12 @@ class CRUDController extends Controller
                     $this->handleModelManagerException($e);
 
                     $isFormValid = false;
+                } catch (LockException $e) {
+                    $this->addFlash('sonata_flash_error', $this->admin->trans('flash_lock_error', array(
+                        '%name%'       => $this->escapeHtml($this->admin->toString($object)),
+                        '%link_start%' => '<a href="'.$this->admin->generateObjectUrl('edit', $object).'">',
+                        '%link_end%'   => '</a>',
+                    ), 'SonataAdminBundle'));
                 }
             }
 
@@ -503,7 +508,16 @@ class CRUDController extends Controller
         }
 
         if (!$url) {
-            $url = $this->admin->generateObjectUrl('edit', $object);
+            foreach (array('edit', 'show') as $route) {
+                if ($this->admin->hasRoute($route) && $this->admin->isGranted(strtoupper($route), $object)) {
+                    $url = $this->admin->generateObjectUrl($route, $object);
+                    break;
+                }
+            }
+        }
+
+        if (!$url) {
+            $url = $this->admin->generateUrl('list');
         }
 
         return new RedirectResponse($url);
@@ -537,7 +551,7 @@ class CRUDController extends Controller
             $action       = $data['action'];
             $idx          = $data['idx'];
             $allElements  = $data['all_elements'];
-            $request->request->replace($data);
+            $request->request->replace(array_merge($request->request->all(), $data));
         } else {
             $request->request->set('idx', $request->get('idx', array()));
             $request->request->set('all_elements', $request->get('all_elements', false));
@@ -559,7 +573,7 @@ class CRUDController extends Controller
         $isRelevantAction = sprintf('batchAction%sIsRelevant', ucfirst($camelizedAction));
 
         if (method_exists($this, $isRelevantAction)) {
-            $nonRelevantMessage = call_user_func(array($this, $isRelevantAction), $idx, $allElements);
+            $nonRelevantMessage = call_user_func(array($this, $isRelevantAction), $idx, $allElements, $request);
         } else {
             $nonRelevantMessage = count($idx) != 0 || $allElements; // at least one item is selected
         }
@@ -620,7 +634,7 @@ class CRUDController extends Controller
             $query = null;
         }
 
-        return call_user_func(array($this, $finalAction), $query);
+        return call_user_func(array($this, $finalAction), $query, $request);
     }
 
     /**
@@ -638,9 +652,7 @@ class CRUDController extends Controller
         // the key used to lookup the template
         $templateKey = 'edit';
 
-        if (false === $this->admin->isGranted('CREATE')) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('create');
 
         $class = new \ReflectionClass($this->admin->hasActiveSubClass() ? $this->admin->getActiveSubClass() : $this->admin->getClass());
 
@@ -676,9 +688,7 @@ class CRUDController extends Controller
 
             // persist if the form was valid and if in preview mode the preview was approved
             if ($isFormValid && (!$this->isInPreviewMode($request) || $this->isPreviewApproved($request))) {
-                if (false === $this->admin->isGranted('CREATE', $object)) {
-                    throw new AccessDeniedException();
-                }
+                $this->admin->checkAccess('create', $object);
 
                 try {
                     $object = $this->admin->create($object);
@@ -820,12 +830,10 @@ class CRUDController extends Controller
         $object = $this->admin->getObject($id);
 
         if (!$object) {
-            throw new NotFoundHttpException(sprintf('unable to find the object with id : %s', $id));
+            throw $this->createNotFoundException(sprintf('unable to find the object with id : %s', $id));
         }
 
-        if (false === $this->admin->isGranted('VIEW', $object)) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('show', $object);
 
         $preResponse = $this->preShow($request, $object);
         if ($preResponse !== null) {
@@ -860,17 +868,15 @@ class CRUDController extends Controller
         $object = $this->admin->getObject($id);
 
         if (!$object) {
-            throw new NotFoundHttpException(sprintf('unable to find the object with id : %s', $id));
+            throw $this->createNotFoundException(sprintf('unable to find the object with id : %s', $id));
         }
 
-        if (false === $this->admin->isGranted('EDIT', $object)) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('history', $object);
 
         $manager = $this->get('sonata.admin.audit.manager');
 
         if (!$manager->hasReader($this->admin->getClass())) {
-            throw new NotFoundHttpException(
+            throw $this->createNotFoundException(
                 sprintf(
                     'unable to find the audit reader for class : %s',
                     $this->admin->getClass()
@@ -910,17 +916,15 @@ class CRUDController extends Controller
         $object = $this->admin->getObject($id);
 
         if (!$object) {
-            throw new NotFoundHttpException(sprintf('unable to find the object with id : %s', $id));
+            throw $this->createNotFoundException(sprintf('unable to find the object with id : %s', $id));
         }
 
-        if (false === $this->admin->isGranted('EDIT', $object)) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('historyViewRevision', $object);
 
         $manager = $this->get('sonata.admin.audit.manager');
 
         if (!$manager->hasReader($this->admin->getClass())) {
-            throw new NotFoundHttpException(
+            throw $this->createNotFoundException(
                 sprintf(
                     'unable to find the audit reader for class : %s',
                     $this->admin->getClass()
@@ -934,7 +938,7 @@ class CRUDController extends Controller
         $object = $reader->find($this->admin->getClass(), $id, $revision);
 
         if (!$object) {
-            throw new NotFoundHttpException(
+            throw $this->createNotFoundException(
                 sprintf(
                     'unable to find the targeted object `%s` from the revision `%s` with classname : `%s`',
                     $id,
@@ -970,22 +974,20 @@ class CRUDController extends Controller
     {
         $request = $this->resolveRequest($request);
 
-        if (false === $this->admin->isGranted('EDIT')) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('historyCompareRevisions');
 
         $id = $request->get($this->admin->getIdParameter());
 
         $object = $this->admin->getObject($id);
 
         if (!$object) {
-            throw new NotFoundHttpException(sprintf('unable to find the object with id : %s', $id));
+            throw $this->createNotFoundException(sprintf('unable to find the object with id : %s', $id));
         }
 
         $manager = $this->get('sonata.admin.audit.manager');
 
         if (!$manager->hasReader($this->admin->getClass())) {
-            throw new NotFoundHttpException(
+            throw $this->createNotFoundException(
                 sprintf(
                     'unable to find the audit reader for class : %s',
                     $this->admin->getClass()
@@ -998,7 +1000,7 @@ class CRUDController extends Controller
         // retrieve the base revision
         $base_object = $reader->find($this->admin->getClass(), $id, $base_revision);
         if (!$base_object) {
-            throw new NotFoundHttpException(
+            throw $this->createNotFoundException(
                 sprintf(
                     'unable to find the targeted object `%s` from the revision `%s` with classname : `%s`',
                     $id,
@@ -1011,7 +1013,7 @@ class CRUDController extends Controller
         // retrieve the compare revision
         $compare_object = $reader->find($this->admin->getClass(), $id, $compare_revision);
         if (!$compare_object) {
-            throw new NotFoundHttpException(
+            throw $this->createNotFoundException(
                 sprintf(
                     'unable to find the targeted object `%s` from the revision `%s` with classname : `%s`',
                     $id,
@@ -1045,9 +1047,7 @@ class CRUDController extends Controller
     {
         $request = $this->resolveRequest($request);
 
-        if (false === $this->admin->isGranted('EXPORT')) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('export');
 
         $format = $request->get('format');
 
@@ -1150,7 +1150,7 @@ class CRUDController extends Controller
         $request = $this->resolveRequest($request);
 
         if (!$this->admin->isAclEnabled()) {
-            throw new NotFoundHttpException('ACL are not enabled for this admin');
+            throw $this->createNotFoundException('ACL are not enabled for this admin');
         }
 
         $id = $request->get($this->admin->getIdParameter());
@@ -1158,12 +1158,10 @@ class CRUDController extends Controller
         $object = $this->admin->getObject($id);
 
         if (!$object) {
-            throw new NotFoundHttpException(sprintf('unable to find the object with id : %s', $id));
+            throw $this->createNotFoundException(sprintf('unable to find the object with id : %s', $id));
         }
 
-        if (false === $this->admin->isGranted('MASTER', $object)) {
-            throw new AccessDeniedException();
-        }
+        $this->admin->checkAccess('acl', $object);
 
         $this->admin->setSubject($object);
         $aclUsers = $this->getAclUsers();
