@@ -75,6 +75,10 @@ body > .header .logo {
 
 .navbar-brand {
     padding-right: 20px;
+    overflow: hidden;
+    text-overflow: "...\"";
+    white-space: nowrap;
+    width: 250px;
 }
 
 .navbar-brand img {
